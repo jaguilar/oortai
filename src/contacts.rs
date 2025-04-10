@@ -1,3 +1,4 @@
+
 use crate::control::*;
 use oort_api::prelude::{
     maths_rs::{
@@ -40,15 +41,16 @@ fn neg<T: SignedNumber>(mut a: Mat4<T>) -> Mat4<T> {
 fn calculate_measurement_covariance(snr: f64) -> Mat4f {
     let error_factor = 10.0f32.powf(-snr as f32 / 10.0);
     const DISTANCE_NOISE_FACTOR: f32 = 1e4;
-    let pos_deviation = DISTANCE_NOISE_FACTOR * error_factor;
+    let pos_var = (DISTANCE_NOISE_FACTOR * error_factor).powi(2);
     const VELOCITY_NOISE_FACTOR: f32 = 1e2;
-    let vel_variance = VELOCITY_NOISE_FACTOR * error_factor;
+    let vel_var = (VELOCITY_NOISE_FACTOR * error_factor).powi(2);
+    debug!("snr: {:2}, err fact: {:2} pos_var = {:.2}, vel_var = {:.2}", snr, error_factor, pos_var, vel_var);
     #[rustfmt::skip]
     return Mat4f::new(
-        pos_deviation, 0., 0., 0.,
-        0., vel_variance, 0., 0.,
-        0., 0., pos_deviation, 0.,
-        0., 0., 0., vel_variance,
+        pos_var, 0., 0., 0.,
+        0., vel_var, 0., 0.,
+        0., 0., pos_var, 0.,
+        0., 0., 0., vel_var,
     );
 }
 
@@ -66,7 +68,7 @@ fn transition_matrix() -> Mat4f {
 impl KalmanFilter {
     pub fn new(class: Class, pos: Vec2, vel: Vec2, snr: f64) -> KalmanFilter {
         let max_accel = class.default_stats().max_forward_acceleration;
-        let accel_var = (max_accel * 100. / 12.).powi(2) as f32;
+        let accel_var = (max_accel * 2. / 12.).powi(2) as f32;
         let tick2 = TICK_LENGTH.powi(2) as f32;
         let tick3 = TICK_LENGTH.powi(3) as f32;
         let tick4 = TICK_LENGTH.powi(4) as f32;
@@ -178,11 +180,21 @@ impl Contact {
         self.filter.pos()
     }
 
-    pub fn pos_stddev(&self) -> Vec2 {
-        Vec2::new(
-            self.filter.state_covariance[0].sqrt() as f64,
-            self.filter.state_covariance[2].sqrt() as f64,
-        )
+    // Reports the furthest away a scan can be and still match this contact.
+    // For contacts we've scanned recently with good signal this will be
+    // approximately the assumed ship size. As time goes since our last scan
+    // the allowed range will increase. 
+    pub fn max_distance_for_match(&self) -> f64 {
+        let assumed_ship_size = 50.0;
+        // Length is sqrt of sides squared, and the variance is already
+        // stddev squared.
+        let len_sq = self.filter.state_covariance[0] + self.filter.state_covariance[2];
+        if len_sq > 0. {
+            // We have a non-zero variance. Use it.
+            len_sq.sqrt() as f64 * 3. + assumed_ship_size
+        } else {
+            assumed_ship_size
+        }
     }
 
     pub fn vel(&self) -> Vec2 {
@@ -199,13 +211,11 @@ impl Contact {
                 self.vel(),
                 self.acc,
             );
-            debug!("State covar before: {:.2}", self.filter.state_covariance);
-            debug!("Stddev before: {:.2}", self.pos_stddev());
+            debug!("Match range before: {:.2}", self.max_distance_for_match());
         }
         self.filter.predict();
         if self.id == 0 {
-            debug!("State covar after: {:.2}", self.filter.state_covariance);
-            debug!("Stddev after: {:.2}", self.pos_stddev());
+            debug!("Match range after: {:.2}", self.max_distance_for_match());
         }
     }
 
@@ -228,8 +238,7 @@ impl Contact {
     pub fn draw(&self) {
         // Draw the contact.
         let pos = self.pos();
-        let pos_stddev = self.pos_stddev();
-        draw_diamond(pos, pos_stddev.x, 0xff0000);
+        draw_diamond(pos, self.max_distance_for_match(), 0xff0000);
         draw_line(pos, pos + self.vel(), 0xfff000);
         draw_line(pos, pos + self.acc, 0xffff00);
         draw_text!(pos, 0x00ff00, "ID: {}{:?}", self.id, self.class);
@@ -267,13 +276,13 @@ impl Contacts {
             .filter(|c| c.class == contact.class)
             .min_by_key(|a| dist_from_scan(a) as i32)
             .filter(|a| {
-                let ok = dist_from_scan(a) < 3.0 * a.pos_stddev().length();
+                let ok = dist_from_scan(a) < a.max_distance_for_match();
                 if !ok {
                     debug!(
                         "Contact {} is too far from scan result: {:.2} meters, max: {:.2}",
                         a.id,
                         dist_from_scan(a),
-                        3.0 * a.pos_stddev().length()
+                        a.max_distance_for_match()
                     );
                 }
                 ok
@@ -283,12 +292,12 @@ impl Contacts {
             // We have a contact that is likely the same as the scan result.
             // Update it.
             debug!(
-                "Updating contact {:.2} meters from expected pos stddev {:.2}",
+                "Updating contact {:.2} meters from max {:.2}",
                 (best_contact.pos() - contact.position).length(),
-                best_contact.pos_stddev()
+                best_contact.max_distance_for_match()
             );
             best_contact.update(contact.position, contact.velocity, contact.snr);
-            debug!("Stddev after update: {:.2}", best_contact.pos_stddev());
+            debug!("Max dist after update: {:.2}", best_contact.max_distance_for_match());
         } else {
             self.contacts.push(Contact::new(
                 contact.class,
