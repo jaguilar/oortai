@@ -13,5 +13,7 @@
 pub mod control;
 pub mod tutorial_deflection;
 pub mod tutorial_lead;
-pub mod tutorial_radar;
 pub mod tutorial_rotation;
+pub mod contacts;
+pub mod radar;
+pub mod tutorial_radar;

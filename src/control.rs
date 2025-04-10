@@ -40,6 +40,12 @@ pub fn lead(e_pos: Vec2, e_vel: Vec2, b_spd: f64) -> Option<f64> {
     }
 }
 
+// Returns the position of an entity with the given position, velocity,
+// acceleration and acceleration after t seconds have elapsed.
+pub fn pos_after(pos: Vec2, vel: Vec2, acc: Vec2, t: f64) -> Vec2 {
+    pos + vel * t + 0.5 * acc * t.powi(2)
+}
+
 // Runs Newton's method on a function and its derivative to find a rational
 // root near x0.
 //
@@ -60,9 +66,10 @@ fn newtons_method<T: (Fn(f64) -> Option<f64>), U: (Fn(f64) -> f64)>(
 ) -> Option<f64> {
     let mut x = x0;
 
-    for _ in 0..100 {
+    for i in 0..100 {
         if let Some(fx) = f(x) {
             if fx.abs() < tol.unwrap_or(1e-10) {
+                debug!("nm iters: {}", i + 1);
                 return Some(x);
             }
 
@@ -93,34 +100,30 @@ pub fn lead3(e_pos: Vec2, e_vel: Vec2, e_acc: Vec2, b_spd: f64) -> Option<Vec2> 
     let eax = e_acc.x;
     let eay = e_acc.y;
 
+    let a = -0.25 * eax.powi(2) - 0.25 * eay.powi(2);
+    let b = -1.0 * eax * evx - 1.0 * eay * evy;
+    let c = b_spd.powi(2) - 1.0 * eax * esx - 1.0 * eay * esy - evx.powi(2) - evy.powi(2);
+    let d = -2. * esx * evx - 2. * esy * evy;
+    let e = -esx.powi(2) - esy.powi(2);
+
     let f = |t: f64| -> Option<f64> {
         if t <= 0. {
             return None;
         }
-        Some(
-            -esx.powi(2) - esy.powi(2)
-                + t.powi(4) * (-0.25 * eax.powi(2) - 0.25 * eay.powi(2))
-                + t.powi(3) * (-1.0 * eax * evx - 1.0 * eay * evy)
-                + t.powi(2)
-                    * (b_spd.powi(2)
-                        - 1.0 * eax * esx
-                        - 1.0 * eay * esy
-                        - evx.powi(2)
-                        - evy.powi(2))
-                + t * (-2. * esx * evx - 2. * esy * evy),
-        )
+        Some(a * t.powi(4) + b * t.powi(3) + c * t.powi(2) + d * t + e)
     };
+
+    let ap = 4. * a;
+    let bp = 3. * b;
+    let cp = 2. * c;
+    let dp = d;
     let fp = |t: f64| {
-        t.powi(3) * (-eax.powi(2) - eay.powi(2))
-            + t.powi(2) * 3. * (-eax * evx - eay * evy)
-            + t * 2.
-                * (b_spd.powi(2) - 1.0 * eax * esx - 1.0 * eay * esy - evx.powi(2) - evy.powi(2))
-            + (-2. * esx * evx - 2. * esy * evy)
+        ap * t.powi(3) + bp * t.powi(2) + cp * t + dp
     };
 
     let x0 = e_rpos.length() / b_spd;
-    newtons_method(&f, &fp, x0, Some(1e-5), None)
-        .and_then(|t: f64| Some(position() + e_rpos + e_rvel * t + 0.5 * e_acc * t.powi(2)))
+    newtons_method(&f, &fp, x0, Some(TICK_LENGTH / 100.), None)
+        .and_then(|t: f64| Some(pos_after(e_pos, e_vel, e_acc, t)))
 }
 
 pub fn lead2(e_pos: Vec2, e_vel: Vec2, e_acc: Vec2, b_spd: f64) -> Option<f64> {

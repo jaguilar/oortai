@@ -1,5 +1,3 @@
-use std::sync::PoisonError;
-
 use crate::control::*;
 use maths_rs::*;
 use oort_api::prelude::*;
@@ -22,7 +20,7 @@ impl Ship {
         self.last_v = target_velocity();
 
         if let Some(err) = aim_at_entity(target(), target_velocity(), target_acc, BULLET_SPEED) {
-            if err < 1. / 360. * 2. * PI {
+            if err < 0.4 / 360. * 2. * PI {
                 fire(0)
             }
         }

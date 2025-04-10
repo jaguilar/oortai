@@ -18,7 +18,7 @@ impl Ship {
             let lead_vec = vec2(sin(a), cos(a));
             draw_line(position(), lead_vec, 0xff0000);
             if aim_at_vec(lead_vec) {
-                fire(0)
+                fire(0);
             }
         }
     }
