@@ -188,7 +188,7 @@ fn lead2_raw(
 // aim point
 pub fn aim_at_entity(pos: Vec2, vel: Vec2, acc: Vec2, bspd: f64) -> Option<f64> {
     let a = lead3(pos, vel, acc, bspd)?;
-    draw_line(position(), a - position(), 0xff0000);
+    draw_line(position(), a, 0xff0000);
     draw_diamond(a, 10.0, 0xff0000);
     aim_at_vec(a);
     return Some(angle_diff((a - position()).angle(), heading()).abs());

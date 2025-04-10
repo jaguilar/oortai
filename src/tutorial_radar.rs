@@ -28,5 +28,13 @@ impl Ship {
         self.contacts.cleanup();
 
         set_radar_heading(radar_heading() + beam_width);
+
+        if let Some(contact) = self.contacts.contacts().iter().by_ref().next() {
+            if let Some(angle) = aim_at_entity(contact.pos(), contact.vel(), contact.acc(), BULLET_SPEED) {
+                if angle < 2. / 360. * 2.* PI {
+                    fire(0);
+                }
+            }
+        }
     }
 }

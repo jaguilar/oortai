@@ -177,7 +177,23 @@ impl Contact {
     }
 
     pub fn pos(&self) -> Vec2 {
-        self.filter.pos()
+        self.filter.pos() + 0.5 * self.acc * self.since_update().powi(2)
+    }
+
+    pub fn vel(&self) -> Vec2 {
+        self.filter.vel() + self.acc * self.since_update()
+    }
+
+    pub fn class(&self) -> Class {
+        self.class
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn acc(&self) -> Vec2 {
+        self.acc
     }
 
     // Reports the furthest away a scan can be and still match this contact.
@@ -197,9 +213,6 @@ impl Contact {
         }
     }
 
-    pub fn vel(&self) -> Vec2 {
-        self.filter.vel()
-    }
 
     pub fn tick(&mut self) {
         // Update the filter with the current position and velocity.
@@ -258,6 +271,10 @@ impl Contacts {
         }
     }
 
+    pub fn contacts(&self) -> &Vec<Contact> {
+        &self.contacts
+    }
+
     pub fn tick(&mut self) {
         // Update all the contacts.
         for contact in &mut self.contacts {
@@ -312,7 +329,7 @@ impl Contacts {
 
     pub fn cleanup(&mut self) {
         // Remove contacts that we haven't seen in a while.
-        self.contacts.retain(|c| c.since_update() < 2.0);
+        self.contacts.retain(|c| c.since_update() < 0.5);
     }
 
     pub fn draw(&self) {
