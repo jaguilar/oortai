@@ -3,47 +3,10 @@ use std::cmp::min_by;
 use maths_rs::*;
 use oort_api::prelude::*;
 
-// Calculates the lead angle needed to hit a target given the position and
-// velocity of the target and the shooting ship. The angle is returned in
-// radians, where zero means "fire directly at the enemy" and positive
-// radians indicate to turn clockwise. If there are no solutions, returns
-// Nothing. If there are two solutions, picks the solution that has the
-// shortest travel time.
-pub fn lead(e_pos: Vec2, e_vel: Vec2, b_spd: f64) -> Option<f64> {
-    // This implementation uses the law of sines to calculate the angle from
-    // our ship to the position where the bullet and the enemy collide.
-    // An explanation can be found here:
-    // https://www.youtube.com/watch?v=F0eJXk8ZuTk
-
-    // Convert the enemy's speed vector to the reference frame of our ship.
-    let e_vel_rel = e_vel - velocity();
-
-    // Get the enemy's look angle to us (angle between enemy's travel direction
-    // relative to us and vector from enemy to us).
-    let e_to_me = position() - e_pos;
-    let look_angle = angle_diff(e_vel_rel.angle(), e_to_me.angle());
-
-    // Compute each possible solution.
-    let e_spd = e_vel_rel.length();
-    let inner = e_spd * sin(look_angle) / b_spd;
-    if inner < -1. || inner > 1. {
-        return None;
-    }
-
-    let asind = asin(inner);
-    let sol1 = asind;
-    let sol2 = PI - asind;
-    if abs(sol1) < abs(sol2) {
-        return Some(sol1);
-    } else {
-        return Some(sol2);
-    }
-}
-
 // Returns the position of an entity with the given position, velocity,
 // acceleration and acceleration after t seconds have elapsed.
 pub fn pos_after(pos: Vec2, vel: Vec2, acc: Vec2, t: f64) -> Vec2 {
-    pos + vel * t + 0.5 * acc * t.powi(2)
+    pos + t * (vel + 0.5 * acc * t)
 }
 
 // Runs Newton's method on a function and its derivative to find a rational
@@ -100,85 +63,28 @@ pub fn lead3(e_pos: Vec2, e_vel: Vec2, e_acc: Vec2, b_spd: f64) -> Option<Vec2> 
     let eax = e_acc.x;
     let eay = e_acc.y;
 
-    let a = -0.25 * eax.powi(2) - 0.25 * eay.powi(2);
-    let b = -1.0 * eax * evx - 1.0 * eay * evy;
-    let c = b_spd.powi(2) - 1.0 * eax * esx - 1.0 * eay * esy - evx.powi(2) - evy.powi(2);
-    let d = -2. * esx * evx - 2. * esy * evy;
-    let e = -esx.powi(2) - esy.powi(2);
-
     let f = |t: f64| -> Option<f64> {
         if t <= 0. {
             return None;
         }
-        Some(a * t.powi(4) + b * t.powi(3) + c * t.powi(2) + d * t + e)
+        let t2 = t.powi(2);
+        Some(
+            b_spd.powi(2) * t2
+                - (0.5 * eax * t2 + esx + evx * t).powi(2)
+                - (0.5 * eay * t2 + esy + evy * t).powi(2),
+        )
     };
 
-    let ap = 4. * a;
-    let bp = 3. * b;
-    let cp = 2. * c;
-    let dp = d;
     let fp = |t: f64| {
-        ap * t.powi(3) + bp * t.powi(2) + cp * t + dp
+        let t2 = t.powi(2);
+        2. * b_spd.powi(2) * t
+            - (2.0 * eax * t + 2. * evx) * (0.5 * eax * t2 + esx + evx * t)
+            - (2.0 * eay * t + 2. * evy) * (0.5 * eay * t2 + esy + evy * t)
     };
 
     let x0 = e_rpos.length() / b_spd;
     newtons_method(&f, &fp, x0, Some(TICK_LENGTH / 100.), None)
         .and_then(|t: f64| Some(pos_after(e_pos, e_vel, e_acc, t)))
-}
-
-pub fn lead2(e_pos: Vec2, e_vel: Vec2, e_acc: Vec2, b_spd: f64) -> Option<f64> {
-    let e_rpos = e_pos - position();
-    let e_rvel = e_vel - velocity();
-
-    match lead2_raw(
-        b_spd, e_rpos.x, e_rpos.y, e_rvel.x, e_rvel.y, e_acc.x, e_acc.y,
-    ) {
-        (None, None) => None,
-        (Some(th), None) => Some(th),
-        (None, Some(th)) => Some(th),
-        (Some(th1), Some(th2)) => {
-            // When we have two workable solutions, we pick the one that
-            // is closer to the current heading to the enemy. It's a hack to
-            // try to estimate which hits soonest without doing all the math.
-            let ehdg = e_rpos.angle();
-            if abs(angle_diff(th1, ehdg)) < abs(angle_diff(th2, ehdg)) {
-                Some(th1)
-            } else {
-                Some(th2)
-            }
-        }
-    }
-}
-
-fn lead2_raw(
-    bspd: f64,
-    esx: f64,
-    esy: f64,
-    evx: f64,
-    evy: f64,
-    eax: f64,
-    eay: f64,
-) -> (Option<f64>, Option<f64>) {
-    let inner = 2.82842712474619
-        * (0.5 * bspd.powi(2) * esx.powi(2) + 0.5 * bspd.powi(2) * esy.powi(2)
-            - 0.125 * eax.powi(2) * esy.powi(2)
-            + 0.25 * eax * eay * esx * esy
-            + 0.5 * eax * esx * esy * evy
-            - 0.5 * eax * esy.powi(2) * evx
-            - 0.125 * eay.powi(2) * esx.powi(2)
-            - 0.5 * eay * esx.powi(2) * evy
-            + 0.5 * eay * esx * esy * evx
-            - 0.5 * esx.powi(2) * evy.powi(2)
-            + esx * esy * evx * evy
-            - 0.5 * esy.powi(2) * evx.powi(2))
-        .sqrt();
-    let denom = 2.0 * bspd * esx - eax * esy + eay * esx + 2.0 * esx * evy - 2.0 * esy * evx;
-    let out1 = -2.0 * ((2.0 * bspd * esy - inner) / denom).atan();
-    let out2 = -2.0 * ((2.0 * bspd * esy + inner) / denom).atan();
-    (
-        if f64::is_nan(out1) { None } else { Some(out1) },
-        if f64::is_nan(out2) { None } else { Some(out2) },
-    )
 }
 
 // Aims at the entity whose pos, vel, and acc are given. Aim for a gun with the

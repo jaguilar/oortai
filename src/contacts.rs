@@ -1,4 +1,3 @@
-
 use crate::control::*;
 use oort_api::prelude::{
     maths_rs::{
@@ -9,6 +8,7 @@ use oort_api::prelude::{
     *,
 };
 
+#[derive(Debug)]
 struct KalmanFilter {
     // The state of the enemy contact.
     // pos_x, pos_y, vel_x, vel_y
@@ -44,7 +44,6 @@ fn calculate_measurement_covariance(snr: f64) -> Mat4f {
     let pos_var = (DISTANCE_NOISE_FACTOR * error_factor).powi(2);
     const VELOCITY_NOISE_FACTOR: f32 = 1e2;
     let vel_var = (VELOCITY_NOISE_FACTOR * error_factor).powi(2);
-    debug!("snr: {:2}, err fact: {:2} pos_var = {:.2}, vel_var = {:.2}", snr, error_factor, pos_var, vel_var);
     #[rustfmt::skip]
     return Mat4f::new(
         pos_var, 0., 0., 0.,
@@ -98,13 +97,6 @@ impl KalmanFilter {
         Vec2::new(self.state[1] as f64, self.state[3] as f64)
     }
 
-    pub fn acc(&self) -> Vec2 {
-        Vec2::new(
-            self.state_covariance[0] as f64,
-            self.state_covariance[2] as f64,
-        )
-    }
-
     // Updates the predicted contact state and covariance.
     pub fn predict(&mut self) {
         #[rustfmt::skip]
@@ -134,6 +126,7 @@ impl KalmanFilter {
 // A Contact stores all the information we know about one enemy contact.
 // We get information about the contact from the radar and periodically update
 // it by scanning where we expect it to be.
+#[derive(Debug)]
 pub struct Contact {
     // The ship class of the contact.
     class: Class,
@@ -176,7 +169,13 @@ impl Contact {
         (current_tick() - self.last_seen_tick) as f64 * TICK_LENGTH
     }
 
+    pub fn since_update_ticks(&self) -> u32 {
+        current_tick() - self.last_seen_tick
+    }
+
     pub fn pos(&self) -> Vec2 {
+        // Note: do not need to factor vel into pos because the model already
+        // does that.
         self.filter.pos() + 0.5 * self.acc * self.since_update().powi(2)
     }
 
@@ -196,45 +195,34 @@ impl Contact {
         self.acc
     }
 
+    pub fn pos_stddev(&self) -> f64 {
+        // The standard deviation of the position is the square root of the
+        // variance. The variance is the sum of the variances in each axis.
+        let len_sq = self.filter.state_covariance[0] + self.filter.state_covariance[2];
+        if len_sq > 0. {
+            len_sq.sqrt() as f64
+        } else {
+            0.
+        }
+    }
+
     // Reports the furthest away a scan can be and still match this contact.
     // For contacts we've scanned recently with good signal this will be
     // approximately the assumed ship size. As time goes since our last scan
-    // the allowed range will increase. 
+    // the allowed range will increase.
     pub fn max_distance_for_match(&self) -> f64 {
         let assumed_ship_size = 50.0;
-        // Length is sqrt of sides squared, and the variance is already
-        // stddev squared.
-        let len_sq = self.filter.state_covariance[0] + self.filter.state_covariance[2];
-        if len_sq > 0. {
-            // We have a non-zero variance. Use it.
-            len_sq.sqrt() as f64 * 3. + assumed_ship_size
-        } else {
-            assumed_ship_size
-        }
+        3. * self.pos_stddev() + assumed_ship_size
     }
-
 
     pub fn tick(&mut self) {
         // Update the filter with the current position and velocity.
-        if self.id == 0 {
-            debug!(
-                "Contact {}: pos: {:?}\nvel: {:?}\nacc: {:?}",
-                self.id,
-                self.pos(),
-                self.vel(),
-                self.acc,
-            );
-            debug!("Match range before: {:.2}", self.max_distance_for_match());
-        }
         self.filter.predict();
-        if self.id == 0 {
-            debug!("Match range after: {:.2}", self.max_distance_for_match());
-        }
     }
 
-    pub fn update(&mut self, pos: Vec2, vel: Vec2, snr: f64) {
+    pub fn update(&mut self, scan: ScanResult) {
         // Update the filter with the new position and velocity.
-        self.filter.update(pos, vel, snr);
+        self.filter.update(scan.position, scan.velocity, scan.snr);
         self.acc = (self.vel() - self.vel_last_update) / self.since_update();
         self.vel_last_update = self.vel();
         self.last_seen_tick = current_tick();
@@ -250,11 +238,15 @@ impl Contact {
 
     pub fn draw(&self) {
         // Draw the contact.
-        let pos = self.pos();
+        let mut pos = self.pos();
         draw_diamond(pos, self.max_distance_for_match(), 0xff0000);
         draw_line(pos, pos + self.vel(), 0xfff000);
         draw_line(pos, pos + self.acc, 0xffff00);
-        draw_text!(pos, 0x00ff00, "ID: {}{:?}", self.id, self.class);
+        pos += vec2(20., 0.);  // Draw off to the right.
+        let line_height = vec2(0., 15.);
+        draw_text!(pos, 0x00ff00, "Age{:.2}", self.since_update());
+        pos += line_height;
+        draw_text!(pos + vec2(0., 20.), 0xff0000, "Dev{:.0}m", self.pos_stddev());
     }
 }
 
@@ -282,54 +274,43 @@ impl Contacts {
         }
     }
 
-    pub fn recv_contact(&mut self, contact: &ScanResult) {
+    pub fn contact_to_update<'a>(&'a mut self) -> Option<&'a mut Contact> {
+        const UPDATE_AGE: u32 = (1. / TICK_LENGTH) as u32 / 8;
+        self.contacts
+            .iter_mut()
+            .filter(|c| c.since_update_ticks() > UPDATE_AGE)
+            .max_by_key(|c| c.since_update_ticks())
+    }
+
+    pub fn recv_contact(&mut self, scan_result: ScanResult) {
         // Find the contact that is most likely to be the same contact as the
         // scan result. It needs to have the same class and be within the
         // volume we consider 99% likely to contain the contact (3 std dev).
-        let dist_from_scan = |a: &Contact| (a.pos() - contact.position).length() as f64;
-        if let Some(best_contact) = self
+        let dist_from_scan = |a: &Contact| (a.pos() - scan_result.position).length() as f64;
+        if let Some(_) = self
             .contacts
-            .iter_mut()
-            .filter(|c| c.class == contact.class)
+            .iter()
+            .filter(|c| c.class == scan_result.class)
             .min_by_key(|a| dist_from_scan(a) as i32)
-            .filter(|a| {
-                let ok = dist_from_scan(a) < a.max_distance_for_match();
-                if !ok {
-                    debug!(
-                        "Contact {} is too far from scan result: {:.2} meters, max: {:.2}",
-                        a.id,
-                        dist_from_scan(a),
-                        a.max_distance_for_match()
-                    );
-                }
-                ok
-            })
-            .as_mut()
+            .filter(|a| dist_from_scan(a) < a.max_distance_for_match() )
         {
-            // We have a contact that is likely the same as the scan result.
-            // Update it.
-            debug!(
-                "Updating contact {:.2} meters from max {:.2}",
-                (best_contact.pos() - contact.position).length(),
-                best_contact.max_distance_for_match()
-            );
-            best_contact.update(contact.position, contact.velocity, contact.snr);
-            debug!("Max dist after update: {:.2}", best_contact.max_distance_for_match());
+            // Ignore any contacts that can be confused for something already
+            // in the database.
         } else {
             self.contacts.push(Contact::new(
-                contact.class,
+                scan_result.class,
                 self.next_id,
-                contact.position,
-                contact.velocity,
-                contact.snr,
+                scan_result.position,
+                scan_result.velocity,
+                scan_result.snr,
             ));
             self.next_id += 1;
         }
     }
 
     pub fn cleanup(&mut self) {
-        // Remove contacts that we haven't seen in a while.
-        self.contacts.retain(|c| c.since_update() < 0.5);
+        // Remove contacts if we've failed to track them twice.
+        self.contacts.retain(|c| c.tracking_miss_count < 2);
     }
 
     pub fn draw(&self) {
