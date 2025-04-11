@@ -53,36 +53,25 @@ fn newtons_method<T: (Fn(f64) -> Option<f64>), U: (Fn(f64) -> f64)>(
 }
 
 pub fn lead3(e_pos: Vec2, e_vel: Vec2, e_acc: Vec2, b_spd: f64) -> Option<Vec2> {
-    let e_rpos = e_pos - position();
-    let e_rvel = e_vel - velocity();
+    let es = e_pos - position();
+    let ev = e_vel - velocity();
+    let ea = e_acc;
 
-    let esx = e_rpos.x;
-    let esy = e_rpos.y;
-    let evx = e_rvel.x;
-    let evy = e_rvel.y;
-    let eax = e_acc.x;
-    let eay = e_acc.y;
-
+    // Zero at times when the bullet distance from the ship and the enemy
+    // distance from the ship are the same.
     let f = |t: f64| -> Option<f64> {
         if t <= 0. {
             return None;
         }
-        let t2 = t.powi(2);
-        Some(
-            b_spd.powi(2) * t2
-                - (0.5 * eax * t2 + esx + evx * t).powi(2)
-                - (0.5 * eay * t2 + esy + evy * t).powi(2),
-        )
+        Some(b_spd * t - (es + t * ev + 0.5 * t.powi(2) * ea).length())
     };
 
+    // The derivative of the above function.
     let fp = |t: f64| {
-        let t2 = t.powi(2);
-        2. * b_spd.powi(2) * t
-            - (2.0 * eax * t + 2. * evx) * (0.5 * eax * t2 + esx + evx * t)
-            - (2.0 * eay * t + 2. * evy) * (0.5 * eay * t2 + esy + evy * t)
+        b_spd - (ea * t + ev).length()
     };
 
-    let x0 = e_rpos.length() / b_spd;
+    let x0 = es.length() / b_spd;
     newtons_method(&f, &fp, x0, Some(TICK_LENGTH / 100.), None)
         .and_then(|t: f64| Some(pos_after(e_pos, e_vel, e_acc, t)))
 }
