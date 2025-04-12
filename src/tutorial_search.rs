@@ -31,7 +31,12 @@ impl Ship {
 
             let bullet_travel = vec_to.length() / BULLET_SPEED;
             if bullet_travel > 2. {
-              point_at(vec_to);
+              if abs(angle_diff(heading(), vec_to.angle())) < 1. * 360. / (2. * PI) {
+                // If we are facing the contact, boost.
+                activate_ability(Ability::Boost);
+              }
+              activate_ability(Ability::Boost);
+              point_at(contact.pos());
             } else if let Some(aim_pos) =
                 aim_at_entity(contact.pos(), contact.vel(), contact.acc(), BULLET_SPEED)
             {

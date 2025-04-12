@@ -53,7 +53,7 @@ impl Radar {
                     {
                         update_contact.update(scan_result);
                     } else {
-                        // We scanned something other than the contact, probably 
+                        // We scanned something other than the contact, probably
                         // because we were jammed or the contact was shadowed.
                         update_contact.add_miss();
                     }
@@ -69,15 +69,24 @@ impl Radar {
             self.update_contact_id = None;
         }
         if let Some(update_contact) = contacts.contact_to_update() {
-            // Set the radar so it just scans where the contact will be this
-            // turn. Note that we need to point the radar where the contact
-            // will be *next* tick.
-            let pos = update_contact.pos()
-                + TICK_LENGTH * (update_contact.vel() + TICK_LENGTH * update_contact.acc());
-            let rel = pos - position();
+            // Figure out where we and the enemy will be next turn.
+            let pos_e = pos_after(
+                update_contact.pos(),
+                update_contact.vel(),
+                update_contact.acc(),
+                TICK_LENGTH,
+            );
+            let pos_me = position_next();
+
+
+            let rel = pos_e - pos_me;
             let dist = rel.length();
             let heading = rel.angle();
-            let width = clamp(update_contact.pos_stddev() * 4., 2. * ship_dim(update_contact.class()), 1000.);
+            let width = clamp(
+                update_contact.pos_stddev() * 4.,
+                2. * ship_dim(update_contact.class()),
+                1000.,
+            );
 
             // The beam forms a triangle. The adjacent edge is the distance
             // to the contact position. The opposite edge is half the width.

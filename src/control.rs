@@ -9,6 +9,12 @@ pub fn pos_after(pos: Vec2, vel: Vec2, acc: Vec2, t: f64) -> Vec2 {
     pos + t * (vel + 0.5 * acc * t)
 }
 
+// Returns the position of our ship next turn. This isn't exact because it does
+// not account for acceleration.
+pub fn position_next() -> Vec2 {
+    velocity() * TICK_LENGTH + position()
+}
+
 // Runs Newton's method on a function and its derivative to find a rational
 // root near x0.
 //
