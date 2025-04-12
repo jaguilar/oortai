@@ -19,7 +19,7 @@ impl Ship {
     }
 
     pub fn tick(&mut self) {
-        if !aim_at_vec(target()) {
+        if !aim_at_pos(target(), 1.) {
             return;
         }
         // We're close to the target. See if the line projected from our ship

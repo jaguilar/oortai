@@ -17,3 +17,4 @@ pub mod tutorial_rotation;
 pub mod contacts;
 pub mod radar;
 pub mod tutorial_radar;
+pub mod tutorial_search;

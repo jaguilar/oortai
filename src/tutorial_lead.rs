@@ -15,9 +15,8 @@ impl Ship {
         draw_line(position(), target(), 0x00ff00);
 
         if let Some(a) = lead3(target(), target_velocity(), vec2(0., 0.), BULLET_SPEED) {
-            let lead_vec = a;
-            draw_line(position(), lead_vec, 0xff0000);
-            if aim_at_vec(lead_vec) {
+            draw_line(position(), a, 0xff0000);
+            if aim_at_pos(a, BULLET_SPEED) {
                 fire(0);
             }
         }

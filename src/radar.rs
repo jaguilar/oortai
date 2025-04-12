@@ -1,112 +1,102 @@
-/*
+use std::{ops::Mul, rc::Rc};
 
-use crate::control::*;
-use oort_api::prelude::{maths_rs::*, *};
+use crate::{contacts::Contacts, control::*};
+use oort_api::{
+    ClassStats,
+    prelude::{maths_rs::*, *},
+};
 
-// Contains information about a contact, including when it was last seen,
-// and what it's position and velocity were at that time.
-struct Contact {
-    last_seen_tick: u32,
-    scan_result: ScanResult,
-    acceleration: Vec2,
-}
-
-impl Contact {
-    // Returns the expected current position of the contact assuming it
-    // continued on its prior course (inclusive of its measured acceleration).
-    fn pos_now(&self) -> Vec2 {
-        pos_after(
-            self.scan_result.position,
-            self.scan_result.velocity,
-            self.acceleration,
-            ((current_tick() - self.last_seen_tick) as f64) * TICK_LENGTH,
-        )
-    }
-}
-
-// The state of
-enum Mode {
-    Scan,
-    Track,
-}
-
-// The state of the radar. The radar runs in two modes: scan and track.
-// In scan mode, we circle the radar around looking for new contacts.
-// In trakc mode, we point the radar where we expect a contact to be and update
-// its data. Each contact update takes only one tick, so we can lock up a decent
-// handful of contacts and still have time to scan for new ones.
 pub struct Radar {
-    contacts: Vec<Contact>,
-    mode: Mode,
-    start_tick: u32,
-    scan_idx: usize,
+    update_contact_id: Option<u32>,
+    scan_heading: f64,
+    pub scan_beam_width: f64,
+}
+
+fn ship_dim(c: Class) -> f64 {
+    match c {
+        Class::Fighter => 20.,
+        Class::Frigate => 240.,
+        Class::Cruiser => 480.,
+        Class::Asteroid => 100.,
+        Class::Torpedo => 16.,
+        Class::Target => 40.,
+        Class::Missile => 3.,
+        Class::Unknown => 50.,
+    }
 }
 
 impl Radar {
     pub fn new() -> Radar {
         Radar {
-            contacts: Vec::new(),
-            mode: Mode::Scan,
-            start_tick: current_tick(),
-            track_idx: 0,
+            update_contact_id: None,
+            scan_heading: 0.,
+            scan_beam_width: 2. * PI / 16.,
         }
     }
 
-    pub fn tick(&mut self) {
-        // Start by scanning whatever the radar is pointing at.
-        if let Some(nc) = scan() {
-            // In tracking mode, this had better be the contact we started with.
-            // In scanning mode, we're happy to see anything.
+    pub fn set_scan_beam_width(&mut self, scan_beam_width: f64) {
+        let min_width = match class() {
+            Class::Cruiser | Class::Frigate => 1. / 3600. * 2. * PI,
+            _ => 1. / 720. * 2. * PI,
+        };
+        self.scan_beam_width = clamp(scan_beam_width, min_width, PI / 2.);
+    }
 
-            // See if any of our contacts should be where we hit on the scan.
-            if let Some(oc) = &mut self
-                .contacts
-                .iter_mut()
-                .filter(|c| {
-                    let dist = (c.pos_now() - nc.position).length();
-                    nc.class == c.scan_result.class && dist < 250.
-                })
-                .next()
-            {
-                // We will only update if the snr is within ten decibels of
-                // the old snr. This is just a placeholder value.
-                if oc.scan_result.snr < nc.snr + 10. {
-                    oc.last_seen_tick = current_tick();
-                    oc.acceleration = (nc.velocity - oc.scan_result.velocity) / TICK_LENGTH;
-                    oc.scan_result = nc;
-                } else {
-                    debug!("Did not update contact because SNR was too low.");
+    pub fn tick(&mut self, contacts: &mut Contacts) {
+        {
+            let update_contact = self.update_contact_id.and_then(|id| contacts.at_mut(id));
+            match (update_contact, scan()) {
+                (Some(update_contact), Some(scan_result)) => {
+                    let dist_from_expected = (update_contact.pos() - scan_result.position).length();
+                    if update_contact.class() == scan_result.class
+                        && dist_from_expected < update_contact.max_distance_for_match()
+                    {
+                        update_contact.update(scan_result);
+                    } else {
+                        // We scanned something other than the contact, probably 
+                        // because we were jammed or the contact was shadowed.
+                        update_contact.add_miss();
+                    }
                 }
-            } else {
-                // There is no old version of this contact. Create a new one.
-                self.contacts.push(Contact {
-                    last_seen_tick: current_tick(),
-                    scan_result: nc,
-                    acceleration: vec2(0., 0.),
-                });
+                (Some(update_contact), _) => {
+                    update_contact.add_miss();
+                }
+                (None, Some(scan_result)) => {
+                    contacts.recv_contact(scan_result);
+                }
+                (None, None) => {}
             }
-            if self.mode == Mode::Track {
-                ++self.track_idx;
-            }
-        } else {
-            // No contact was found in this scan. If we were scanning for a
-            // particular contact, prune it from the database.
-            self.contacts.swap_remove(self.track_idx);
+            self.update_contact_id = None;
         }
+        if let Some(update_contact) = contacts.contact_to_update() {
+            // Set the radar so it just scans where the contact will be this
+            // turn. Note that we need to point the radar where the contact
+            // will be *next* tick.
+            let pos = update_contact.pos()
+                + TICK_LENGTH * (update_contact.vel() + TICK_LENGTH * update_contact.acc());
+            let rel = pos - position();
+            let dist = rel.length();
+            let heading = rel.angle();
+            let width = clamp(update_contact.pos_stddev() * 4., 2. * ship_dim(update_contact.class()), 1000.);
 
-        // The mode only controls how we'll point the radar for the next tick.
-        // In scan mode, we sweep the radar all around us, intentionally trying
-        // to avoid known contacts.
-        // In track mode, we point the radar where we expect each contact to be,
-        // in sequence, with filter bands set such that we're trying *not* to
-        // catch any other contacts in the scan.
-        // If the enemy contact is moving very quickly, we may lose it at this
-        // juncture, but only if it deviates significantly
-
-        match self.mode {
-            Mode::Scan => {}
-            Mode::Track => {}
+            // The beam forms a triangle. The adjacent edge is the distance
+            // to the contact position. The opposite edge is half the width.
+            // opposite/adjacent = tan(angle) / 2
+            // (width/2) / distance = tan(angle) / 2
+            // width/distance = tan(angle)
+            // angle = atan(width/distance)
+            let beam_width = 2. * atan(width / dist);
+            set_radar_heading(heading);
+            set_radar_width(beam_width);
+            set_radar_max_distance(dist + width / 2.);
+            set_radar_min_distance(dist - width / 2.);
+            self.update_contact_id = Some(update_contact.id);
+        } else {
+            set_radar_heading(self.scan_heading + self.scan_beam_width);
+            set_radar_width(self.scan_beam_width);
+            set_radar_min_distance(0.);
+            set_radar_max_distance(100000.);
+            self.scan_heading += self.scan_beam_width;
         }
     }
 }
-*/

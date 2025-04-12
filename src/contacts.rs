@@ -1,12 +1,13 @@
 use crate::control::*;
-use oort_api::prelude::{
+use oort_api::{prelude::{
     maths_rs::{
         mat::*,
         num::{Number, NumberOps, SignedNumber},
         *,
     },
     *,
-};
+}, ClassStats};
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug)]
 struct KalmanFilter {
@@ -21,6 +22,9 @@ struct KalmanFilter {
     // The process covariance matrix is fixed per timestep for a given ship
     // class. Also called Q in the literature.
     process_covariance: Mat4f,
+
+    transition: Mat4f,
+    transition_transposed: Mat4f,
 }
 
 fn add<T: Number>(mut a: Mat4<T>, b: &Mat4<T>) -> Mat4<T> {
@@ -53,16 +57,7 @@ fn calculate_measurement_covariance(snr: f64) -> Mat4f {
     );
 }
 
-fn transition_matrix() -> Mat4f {
-    #[rustfmt::skip]
-    let f = Mat4f::new(
-        1.0, TICK_LENGTH as f32, 0., 0.,
-        0., 1., 0., 0.,
-        0., 0., 1., TICK_LENGTH as f32,
-        0., 0., 0., 1.,
-    );
-    f
-}
+
 
 impl KalmanFilter {
     pub fn new(class: Class, pos: Vec2, vel: Vec2, snr: f64) -> KalmanFilter {
@@ -80,12 +75,22 @@ impl KalmanFilter {
             0., 0., 0.5f32 * tick3 * accel_var, tick2 * accel_var,
         );
 
+        #[rustfmt::skip]
+        let transition = Mat4f::new(
+            1.0, TICK_LENGTH as f32, 0., 0.,
+            0., 1., 0., 0.,
+            0., 0., 1., TICK_LENGTH as f32,
+            0., 0., 0., 1.,
+        );
+
         // Use the RSSI to calculate the initial noise on the position and
         // velocity.
         KalmanFilter {
             state: Vec4f::new(pos.x as f32, vel.x as f32, pos.y as f32, vel.y as f32),
             state_covariance: add(process_covariance, &calculate_measurement_covariance(snr)),
             process_covariance,
+            transition,
+            transition_transposed: transition.transpose(),
         }
     }
 
@@ -99,11 +104,9 @@ impl KalmanFilter {
 
     // Updates the predicted contact state and covariance.
     pub fn predict(&mut self) {
-        #[rustfmt::skip]
-        let f = transition_matrix();
-        self.state = f * self.state;
+        self.state = self.transition * self.state;
         self.state_covariance = add(
-            f * self.state_covariance * f.transpose(),
+            self.transition * self.state_covariance * self.transition_transposed ,
             &self.process_covariance,
         );
     }
@@ -118,7 +121,6 @@ impl KalmanFilter {
 
         let measurement = Vec4f::new(pos.x as f32, vel.x as f32, pos.y as f32, vel.y as f32);
         self.state = self.state + kalman_gain * (measurement - self.state);
-
         self.state_covariance = (add(Mat4f::identity(), &neg(kalman_gain))) * self.state_covariance;
     }
 }
@@ -132,7 +134,7 @@ pub struct Contact {
     class: Class,
 
     // We assign a unique id to each contact.
-    id: u32,
+    pub id: u32,
 
     // The physics of the contact.
     filter: KalmanFilter,
@@ -150,6 +152,10 @@ pub struct Contact {
     // where we expected. Resets every time we successfully track. If it climbs
     // too high we'll probably delete it from the contact database.
     tracking_miss_count: u32,
+
+    // The predicted position of the contact at a future time. Used to paint
+    // where we were aiming.
+    predictions: VecDeque<(f64, Vec2)>,
 }
 
 impl Contact {
@@ -162,6 +168,7 @@ impl Contact {
             acc: vec2(0., 0.),
             last_seen_tick: current_tick(),
             tracking_miss_count: 0,
+            predictions: VecDeque::with_capacity(5),
         }
     }
 
@@ -195,6 +202,19 @@ impl Contact {
         self.acc
     }
 
+    // Records a prediction of where the contact will be at time t.
+    pub fn record_prediction(&mut self, t: f64, pos: Vec2) {
+        if self.predictions.len() < self.predictions.capacity() {
+            self.predictions.push_back((t, pos));
+        }
+        
+    }
+
+    fn clean_old_predictions(&mut self) {
+        let now = current_time();
+        self.predictions.retain(|(t, _)| *t >= now);
+    }
+
     pub fn pos_stddev(&self) -> f64 {
         // The standard deviation of the position is the square root of the
         // variance. The variance is the sum of the variances in each axis.
@@ -217,69 +237,99 @@ impl Contact {
 
     pub fn tick(&mut self) {
         // Update the filter with the current position and velocity.
+        self.clean_old_predictions();
         self.filter.predict();
     }
 
-    pub fn update(&mut self, scan: ScanResult) {
+    pub fn update(&mut self, scan: ScanResult) -> &Contact {
         // Update the filter with the new position and velocity.
         self.filter.update(scan.position, scan.velocity, scan.snr);
         self.acc = (self.vel() - self.vel_last_update) / self.since_update();
         self.vel_last_update = self.vel();
         self.last_seen_tick = current_tick();
         self.tracking_miss_count = 0;
+        self
     }
 
     // Marks that we missed tracking for this contact. Returns the number of
     // tracking misses since the last update.
     pub fn add_miss(&mut self) -> u32 {
         self.tracking_miss_count += 1;
+        self.predictions.clear();
         self.tracking_miss_count
+
     }
 
     pub fn draw(&self) {
         // Draw the contact.
         let mut pos = self.pos();
-        draw_diamond(pos, self.max_distance_for_match(), 0xff0000);
+        draw_diamond(pos, self.pos_stddev(), 0xff0000);
         draw_line(pos, pos + self.vel(), 0xfff000);
         draw_line(pos, pos + self.acc, 0xffff00);
-        pos += vec2(20., 0.);  // Draw off to the right.
+        pos += vec2(20., 0.); // Draw off to the right.
         let line_height = vec2(0., 15.);
         draw_text!(pos, 0x00ff00, "Age{:.2}", self.since_update());
         pos += line_height;
-        draw_text!(pos + vec2(0., 20.), 0xff0000, "Dev{:.0}m", self.pos_stddev());
+        draw_text!(
+            pos + vec2(0., 20.),
+            0xff0000,
+            "Dev{:.0}m",
+            self.pos_stddev()
+        );
+        if let Some((t, pos)) = self.predictions.front() {
+            if *t >= current_time() {
+                draw_diamond(*pos, 20., 0x00ff00);
+            }
+        };
     }
 }
 
 pub struct Contacts {
-    contacts: Vec<Contact>,
+    contacts: HashMap<u32, Contact>,
     next_id: u32,
 }
 
 impl Contacts {
     pub fn new() -> Contacts {
         Contacts {
-            contacts: Vec::new(),
+            contacts: HashMap::new(),
             next_id: 0,
         }
     }
 
-    pub fn contacts(&self) -> &Vec<Contact> {
-        &self.contacts
+    pub fn at(&self, index: u32) -> Option<&Contact> {
+        self.contacts.get(&index)
+    }
+
+    pub fn at_mut(&mut self, index: u32) -> Option<&mut Contact> {
+        self.contacts.get_mut(&index)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Contact> {
+        self.contacts.values()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Contact> {
+        self.contacts.values_mut()
     }
 
     pub fn tick(&mut self) {
         // Update all the contacts.
-        for contact in &mut self.contacts {
+        self.contacts.retain(|_, c| c.tracking_miss_count < 2);
+        for (_, contact) in &mut self.contacts {
             contact.tick();
         }
     }
 
-    pub fn contact_to_update<'a>(&'a mut self) -> Option<&'a mut Contact> {
+    pub fn contact_to_update(&self) -> Option<&Contact> {
         const UPDATE_AGE: u32 = (1. / TICK_LENGTH) as u32 / 8;
-        self.contacts
-            .iter_mut()
+        self.contacts.values()
             .filter(|c| c.since_update_ticks() > UPDATE_AGE)
             .max_by_key(|c| c.since_update_ticks())
+    }
+
+    pub fn update(&mut self, index: u32, scan_result: ScanResult) -> Option<&Contact> {
+        self.at_mut(index)?.update(scan_result).into()
     }
 
     pub fn recv_contact(&mut self, scan_result: ScanResult) {
@@ -289,15 +339,15 @@ impl Contacts {
         let dist_from_scan = |a: &Contact| (a.pos() - scan_result.position).length() as f64;
         if let Some(_) = self
             .contacts
-            .iter()
+            .values()
             .filter(|c| c.class == scan_result.class)
             .min_by_key(|a| dist_from_scan(a) as i32)
-            .filter(|a| dist_from_scan(a) < a.max_distance_for_match() )
+            .filter(|a| dist_from_scan(a) < a.max_distance_for_match())
         {
             // Ignore any contacts that can be confused for something already
             // in the database.
         } else {
-            self.contacts.push(Contact::new(
+            self.contacts.insert(self.next_id, Contact::new(
                 scan_result.class,
                 self.next_id,
                 scan_result.position,
@@ -308,13 +358,15 @@ impl Contacts {
         }
     }
 
-    pub fn cleanup(&mut self) {
+    fn cleanup(&mut self) {
         // Remove contacts if we've failed to track them twice.
-        self.contacts.retain(|c| c.tracking_miss_count < 2);
+        for contact in self.contacts.values_mut() {
+            contact.clean_old_predictions();
+        }
     }
 
     pub fn draw(&self) {
-        for contact in &self.contacts {
+        for contact in self.contacts.values() {
             contact.draw();
         }
     }

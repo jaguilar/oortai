@@ -32,7 +32,6 @@ fn newtons_method<T: (Fn(f64) -> Option<f64>), U: (Fn(f64) -> f64)>(
     for i in 0..100 {
         if let Some(fx) = f(x) {
             if fx.abs() < tol.unwrap_or(1e-10) {
-                debug!("nm iters: {}", i + 1);
                 return Some(x);
             }
 
@@ -63,7 +62,7 @@ pub fn lead3(e_pos: Vec2, e_vel: Vec2, e_acc: Vec2, b_spd: f64) -> Option<Vec2> 
         if t <= 0. {
             return None;
         }
-        Some(b_spd * t - (es + t * ev + 0.5 * t.powi(2) * ea).length())
+        Some(t * b_spd - (es + t * (ev + t * 0.5 * ea)).length())
     };
 
     // The derivative of the above function.
@@ -72,7 +71,7 @@ pub fn lead3(e_pos: Vec2, e_vel: Vec2, e_acc: Vec2, b_spd: f64) -> Option<Vec2> 
     };
 
     let x0 = es.length() / b_spd;
-    newtons_method(&f, &fp, x0, Some(TICK_LENGTH / 100.), None)
+    newtons_method(&f, &fp, x0, Some(TICK_LENGTH / 10.), None)
         .and_then(|t: f64| Some(pos_after(e_pos, e_vel, e_acc, t)))
 }
 
@@ -81,21 +80,31 @@ pub fn lead3(e_pos: Vec2, e_vel: Vec2, e_acc: Vec2, b_spd: f64) -> Option<Vec2> 
 //
 // Returns the absolute angle between our heading and the heading to the
 // aim point
-pub fn aim_at_entity(pos: Vec2, vel: Vec2, acc: Vec2, bspd: f64) -> Option<f64> {
+pub fn aim_at_entity(pos: Vec2, vel: Vec2, acc: Vec2, bspd: f64) -> Option<Vec2> {
     let a = lead3(pos, vel, acc, bspd)?;
-    draw_line(position(), a, 0xff0000);
-    draw_diamond(a, 10.0, 0xff0000);
-    aim_at_vec(a);
-    return Some(angle_diff((a - position()).angle(), heading()).abs());
+    aim_at_pos(a, bspd);
+    Some(a)
 }
 
 // Instructs the ship to turn toward target. Returns the distance between the
 // target and the line projected from the current heading, in meters.
-pub fn aim_at_vec(target: Vec2) -> bool {
-    aim_at_heading((target - position()).angle())
+pub fn aim_at_pos(target: Vec2, bspd: f64) -> bool {
+    draw_line(position(), target, 0xff0000);
+    draw_diamond(target, 10.0, 0xff0000);
+
+    // We impart our own velocity to the bullet, so it will be displaced from
+    // its intended position by our own velocity. Therefore, we must shoot it
+    // at the target's current position plus that displacement negated.
+    let travel_time = (target - position()).length() / bspd;
+    let displacement = travel_time * velocity();
+    aim_at_heading(((target - displacement) - position()).angle())
 }
 
-pub fn aim_at_heading(target_heading: f64) -> bool {
+pub fn point_at(target: Vec2) {
+    aim_at_heading((target - position()).angle());
+}
+
+fn aim_at_heading(target_heading: f64) -> bool {
     let error = angle_diff(target_heading, heading());
     let max_accel = if error < 0. {
         -max_angular_acceleration()

@@ -19,7 +19,8 @@ impl Ship {
         let target_acc = (target_velocity() - self.last_v) / TICK_LENGTH;
         self.last_v = target_velocity();
 
-        if let Some(err) = aim_at_entity(target(), target_velocity(), target_acc, BULLET_SPEED) {
+        if let Some(target) = aim_at_entity(target(), target_velocity(), target_acc, BULLET_SPEED) {
+            let err = abs(angle_diff(target.angle(), heading()));
             if err < 0.4 / 360. * 2. * PI {
                 fire(0)
             }
