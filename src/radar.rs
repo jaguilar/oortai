@@ -44,22 +44,9 @@ impl Radar {
 
     pub fn tick(&mut self, contacts: &mut Contacts) {
         {
-            let update_contact = self.update_contact_id.and_then(|id| contacts.at_mut(id));
-            match (update_contact, scan()) {
-                (Some(update_contact), Some(scan_result)) => {
-                    let dist_from_expected = (update_contact.pos() - scan_result.position).length();
-                    if update_contact.class() == scan_result.class
-                        && dist_from_expected < update_contact.max_distance_for_match()
-                    {
-                        update_contact.update(scan_result);
-                    } else {
-                        // We scanned something other than the contact, probably
-                        // because we were jammed or the contact was shadowed.
-                        update_contact.add_miss();
-                    }
-                }
-                (Some(update_contact), _) => {
-                    update_contact.add_miss();
+            match (self.update_contact_id, scan()) {
+                (Some(id), scan_result) => {
+                    contacts.update(id, scan_result);
                 }
                 (None, Some(scan_result)) => {
                     contacts.recv_contact(scan_result);

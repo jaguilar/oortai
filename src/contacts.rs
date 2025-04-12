@@ -1,12 +1,15 @@
 use crate::control::*;
-use oort_api::{prelude::{
-    maths_rs::{
-        mat::*,
-        num::{Number, NumberOps, SignedNumber},
+use oort_api::{
+    ClassStats,
+    prelude::{
+        maths_rs::{
+            mat::*,
+            num::{Number, NumberOps, SignedNumber},
+            *,
+        },
         *,
     },
-    *,
-}, ClassStats};
+};
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug)]
@@ -57,8 +60,6 @@ fn calculate_measurement_covariance(snr: f64) -> Mat4f {
     );
 }
 
-
-
 impl KalmanFilter {
     pub fn new(class: Class, pos: Vec2, vel: Vec2, snr: f64) -> KalmanFilter {
         let max_accel = class.default_stats().max_forward_acceleration;
@@ -106,7 +107,7 @@ impl KalmanFilter {
     pub fn predict(&mut self) {
         self.state = self.transition * self.state;
         self.state_covariance = add(
-            self.transition * self.state_covariance * self.transition_transposed ,
+            self.transition * self.state_covariance * self.transition_transposed,
             &self.process_covariance,
         );
     }
@@ -118,7 +119,6 @@ impl KalmanFilter {
         let measurement_covariance = calculate_measurement_covariance(snr);
         let kalman_gain =
             self.state_covariance * add(self.state_covariance, &measurement_covariance).inverse();
-
         let measurement = Vec4f::new(pos.x as f32, vel.x as f32, pos.y as f32, vel.y as f32);
         self.state = self.state + kalman_gain * (measurement - self.state);
         self.state_covariance = (add(Mat4f::identity(), &neg(kalman_gain))) * self.state_covariance;
@@ -207,7 +207,6 @@ impl Contact {
         if self.predictions.len() < self.predictions.capacity() {
             self.predictions.push_back((t, pos));
         }
-        
     }
 
     fn clean_old_predictions(&mut self) {
@@ -257,7 +256,6 @@ impl Contact {
         self.tracking_miss_count += 1;
         self.predictions.clear();
         self.tracking_miss_count
-
     }
 
     pub fn draw(&self) {
@@ -323,13 +321,57 @@ impl Contacts {
 
     pub fn contact_to_update(&self) -> Option<&Contact> {
         const UPDATE_AGE: u32 = (1. / TICK_LENGTH) as u32 / 8;
-        self.contacts.values()
+        self.contacts
+            .values()
             .filter(|c| c.since_update_ticks() > UPDATE_AGE)
             .max_by_key(|c| c.since_update_ticks())
     }
 
-    pub fn update(&mut self, index: u32, scan_result: ScanResult) -> Option<&Contact> {
-        self.at_mut(index)?.update(scan_result).into()
+    pub fn update(&mut self, index: u32, scan_result: Option<ScanResult>) -> Option<&Contact> {
+        if let None = scan_result {
+            self.at_mut(index)?.add_miss();
+            return None;
+        }
+
+        let is_dup: bool;
+        {
+            let scan_result = scan_result.unwrap();
+            let dev_after: f64;
+            let pos: Vec2;
+            {
+                let c = self.at_mut(index)?;
+                c.update(scan_result.clone());
+                dev_after = c.pos_stddev();
+                pos = c.pos();
+            }
+
+            if dev_after < 50. {
+                // Once we've resolve the position of the contact to a sufficient
+                // degree of accuracy, check if it's the same as any contact with
+                // a lower index. If it is, discard it.
+                is_dup = self
+                    .contacts
+                    .values()
+                    .filter(|co| {
+                        co.id < index
+                            && co.class == scan_result.class
+                            && (co.pos() - pos).length() < co.max_distance_for_match()
+                    })
+                    .next()
+                    .is_some();
+                debug!("dev after < 50 is_dup: {}", is_dup);
+            } else {
+                debug!("dev after: {}", dev_after);
+                is_dup = false;
+            }
+        }
+        if is_dup {
+            // We have a duplicate contact. Remove the one with the higher id.
+            self.contacts.remove(&index);
+            None
+        } else {
+            self.contacts.get(&index)
+        }
     }
 
     pub fn recv_contact(&mut self, scan_result: ScanResult) {
@@ -347,13 +389,16 @@ impl Contacts {
             // Ignore any contacts that can be confused for something already
             // in the database.
         } else {
-            self.contacts.insert(self.next_id, Contact::new(
-                scan_result.class,
+            self.contacts.insert(
                 self.next_id,
-                scan_result.position,
-                scan_result.velocity,
-                scan_result.snr,
-            ));
+                Contact::new(
+                    scan_result.class,
+                    self.next_id,
+                    scan_result.position,
+                    scan_result.velocity,
+                    scan_result.snr,
+                ),
+            );
             self.next_id += 1;
         }
     }
