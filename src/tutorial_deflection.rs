@@ -1,9 +1,9 @@
 use crate::control::*;
-use maths_rs::*;
-use oort_api::prelude::*;
+use oort_api::prelude::{maths_rs::{num::Base, *}, *};
 
 pub struct Ship {
-    last_v: Vec2,
+    helm: Helm,
+    v_prev: Vec2,
 }
 
 const BULLET_SPEED: f64 = 1000.0; // m/s
@@ -11,19 +11,14 @@ const BULLET_SPEED: f64 = 1000.0; // m/s
 impl Ship {
     pub fn new() -> Ship {
         Ship {
-            last_v: vec2(0., 0.),
+            helm: Helm::new(),
+            v_prev: Vec2::zero(),
         }
     }
 
     pub fn tick(&mut self) {
-        let target_acc = (target_velocity() - self.last_v) / TICK_LENGTH;
-        self.last_v = target_velocity();
-
-        if let Some(target) = aim_at_entity(target(), target_velocity(), target_acc, BULLET_SPEED) {
-            let err = abs(angle_diff(target.angle(), heading()));
-            if err < 0.4 / 360. * 2. * PI {
-                fire(0)
-            }
-        }
+        let target_acceleration = (target_velocity() - self.v_prev) / TICK_LENGTH;
+        self.v_prev = target_velocity();
+        turn_and_shoot_at(&mut self.helm, target(), target_velocity(), target_acceleration, 1000.0);
     }
 }

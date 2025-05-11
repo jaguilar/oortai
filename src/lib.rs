@@ -11,9 +11,10 @@
 //
 // p.s. You can change your username by clicking on it at the top of the page.
 pub mod control;
-pub mod tutorial_deflection;
-pub mod tutorial_lead;
 pub mod tutorial_rotation;
+pub mod tutorial_lead;
+pub mod tutorial_deflection;
+
 pub mod contacts;
 pub mod radar;
 pub mod tutorial_radar;

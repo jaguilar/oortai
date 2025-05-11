@@ -9,28 +9,20 @@
 // The turn function takes a speed argument, where positive speeds result in turning left
 // and negative speeds will turn right.
 use crate::control::*;
-use oort_api::prelude::{maths_rs::*, *};
+use oort_api::prelude::{maths_rs::{num::Base, *}, *};
 
-pub struct Ship {}
+pub struct Ship {
+    helm: Helm,
+}
 
 impl Ship {
     pub fn new() -> Ship {
-        Ship {}
+        Ship {
+            helm: Helm::new(),
+        }
     }
 
     pub fn tick(&mut self) {
-        if !aim_at_pos(target(), 1.) {
-            return;
-        }
-        // We're close to the target. See if the line projected from our ship
-        // comes within one meter. If it does, fire.
-        let aim_to_target =
-            (closest_point_on_ray(target(), position(), vec2(cos(heading()), sin(heading())))
-                - target())
-            .length();
-        debug!("aim_to_target: {:.2}", aim_to_target);
-        if aim_to_target < 10. {
-            fire(0);
-        }
+        turn_and_shoot_at(&mut self.helm, target(), Vec2::zero(), Vec2::zero(), 1000.0);
     }
 }
